@@ -1,0 +1,11 @@
+# ----- runtime -----
+.env
+node_modules/
+dist/
+
+# ----- IDE -----
+.vscode/settings.json
+
+# ----- OS -----
+.DS_Store
+Thumbs.db

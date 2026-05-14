@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "dataverse-form-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["dist/index.js", "--stdio"]
+    }
+  }
+}
