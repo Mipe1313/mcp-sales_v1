@@ -1,6 +1,6 @@
 {
   "name": "dataverse-mcp-server",
-  "version": "1.0.36",
+  "version": "1.0.38",
   "description": "MCP server for Copilot Studio – Dataverse account form customisation",
   "type": "module",
   "main": "dist/index.js",

@@ -47,6 +47,37 @@ export class DataverseClient {
     };
   }
 
+  /**
+   * Retry an async operation when Dataverse returns the operation-lock 429
+   * (code 0x80071151 – "another [Import] running").
+   * Retries up to maxAttempts times with exponential backoff starting at delayMs.
+   */
+  private async withRetryOnLock<T>(
+    fn: () => Promise<T>,
+    maxAttempts = 5,
+    delayMs = 4000,
+  ): Promise<T> {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await fn();
+      } catch (err) {
+        const code = (err as { response?: { data?: { error?: { code?: string } } } })
+          ?.response?.data?.error?.code;
+        attempt++;
+        if (code === "0x80071151" && attempt < maxAttempts) {
+          const wait = delayMs * Math.pow(2, attempt - 1);
+          process.stderr.write(
+            `[mcp] operation lock (0x80071151), retrying in ${wait}ms (attempt ${attempt}/${maxAttempts})\n`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, wait));
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
   /** Extract a Dataverse entity ID from the OData-EntityId response header. */
   private extractId(locationHeader: string | undefined): string {
     const match = locationHeader?.match(/\(([^)]+)\)/);
@@ -553,10 +584,12 @@ export class DataverseClient {
         break;
     }
 
-    const res = await axios.post(
-      `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes`,
-      body,
-      { headers: h },
+    const res = await this.withRetryOnLock(() =>
+      axios.post(
+        `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes`,
+        body,
+        { headers: h },
+      )
     );
     return this.extractId(
       (res.headers["odata-entityid"] as string | undefined) ??
@@ -614,10 +647,12 @@ export class DataverseClient {
       body["DefaultFormValue"] = options.defaultValue;
     }
 
-    const res = await axios.post(
-      `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes`,
-      body,
-      { headers: h },
+    const res = await this.withRetryOnLock(() =>
+      axios.post(
+        `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes`,
+        body,
+        { headers: h },
+      )
     );
     return this.extractId(
       (res.headers["odata-entityid"] as string | undefined) ??
@@ -680,13 +715,15 @@ export class DataverseClient {
 
     const odataType = this.attributeTypeNameToOdataType(full.AttributeTypeName.Value);
 
-    await axios.put(
-      `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes(${full.MetadataId})`,
-      {
-        "@odata.type": odataType,
-        RequiredLevel: this.makeRequiredLevel(requiredLevel),
-      },
-      { headers: h },
+    await this.withRetryOnLock(() =>
+      axios.put(
+        `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes(${full.MetadataId})`,
+        {
+          "@odata.type": odataType,
+          RequiredLevel: this.makeRequiredLevel(requiredLevel),
+        },
+        { headers: h },
+      )
     );
   }
 
@@ -808,4 +845,108 @@ export class DataverseClient {
       { headers: h },
     );
   }
+
+  /**
+   * Update mutable properties on an existing attribute (display name, description,
+   * required level, max length). Fetches full metadata first to determine the OData type.
+   */
+  async updateAttributeProperties(
+    entityLogicalName: string,
+    fieldLogicalName: string,
+    updates: {
+      displayName?: string;
+      description?: string;
+      requiredLevel?: "None" | "Recommended" | "Required";
+      maxLength?: number;
+      minValue?: number;
+      maxValue?: number;
+    },
+    solutionUniqueName?: string,
+  ): Promise<void> {
+    const h = await this.headers();
+    h["MSCRM.MergeLabels"] = "true";
+    if (solutionUniqueName) h["MSCRM.SolutionUniqueName"] = solutionUniqueName;
+
+    const full = await this.getAttributeFullMetadata(entityLogicalName, fieldLogicalName);
+    if (!full) throw new Error(`Field '${fieldLogicalName}' not found on entity '${entityLogicalName}'`);
+
+    const odataType = this.attributeTypeNameToOdataType(full.AttributeTypeName.Value);
+    const body: Record<string, unknown> = { "@odata.type": odataType };
+
+    if (updates.displayName !== undefined) {
+      body["DisplayName"] = this.makeLabel(updates.displayName);
+    }
+    if (updates.description !== undefined) {
+      body["Description"] = this.makeLabel(updates.description);
+    }
+    if (updates.requiredLevel !== undefined) {
+      body["RequiredLevel"] = this.makeRequiredLevel(updates.requiredLevel);
+    }
+    if (updates.maxLength !== undefined) {
+      body["MaxLength"] = updates.maxLength;
+    }
+    if (updates.minValue !== undefined) {
+      body["MinValue"] = updates.minValue;
+    }
+    if (updates.maxValue !== undefined) {
+      body["MaxValue"] = updates.maxValue;
+    }
+
+    await this.withRetryOnLock(() =>
+      axios.put(
+        `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes(${full.MetadataId})`,
+        body,
+        { headers: h },
+      )
+    );
+  }
+
+  /**
+   * Add a new option to an existing local Picklist or MultiSelectPicklist attribute.
+   */
+  async addOptionToPicklist(
+    entityLogicalName: string,
+    fieldLogicalName: string,
+    optionValue: number,
+    optionLabel: string,
+    solutionUniqueName?: string,
+  ): Promise<void> {
+    const h = await this.headers();
+    if (solutionUniqueName) h["MSCRM.SolutionUniqueName"] = solutionUniqueName;
+
+    await this.withRetryOnLock(() =>
+      axios.post(
+        `${this.baseUrl}/InsertOptionValue`,
+        {
+          EntityLogicalName: entityLogicalName,
+          AttributeLogicalName: fieldLogicalName,
+          Value: optionValue,
+          Label: this.makeLabel(optionLabel),
+          MergeLabels: true,
+        },
+        { headers: h },
+      )
+    );
+  }
+
+  /**
+   * List all options for a Picklist or MultiSelectPicklist attribute.
+   */
+  async getPicklistOptions(
+    entityLogicalName: string,
+    fieldLogicalName: string,
+  ): Promise<Array<{ value: number; label: string }>> {
+    const h = await this.headers();
+    const res = await axios.get<{
+      Options: Array<{ Value: number; Label: { UserLocalizedLabel: { Label: string } } }>;
+    }>(
+      `${this.baseUrl}/EntityDefinitions(LogicalName='${entityLogicalName}')/Attributes(LogicalName='${fieldLogicalName}')/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/OptionSet`,
+      { headers: h },
+    );
+    return (res.data.Options ?? []).map((o) => ({
+      value: o.Value,
+      label: o.Label?.UserLocalizedLabel?.Label ?? "",
+    }));
+  }
 }
+

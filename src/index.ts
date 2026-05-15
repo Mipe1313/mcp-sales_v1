@@ -483,6 +483,52 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: "update_column",
+    description:
+      "Modify properties of an existing column (field) on a Dataverse table. " +
+      "Can update display name, description, required level, max length, min/max values.",
+    inputSchema: {
+      type: "object",
+      required: ["entityLogicalName", "fieldLogicalName"],
+      properties: {
+        entityLogicalName: { type: "string", description: "Logical name of the table, e.g. account" },
+        fieldLogicalName: { type: "string", description: "Logical name of the field to update, e.g. telephone1" },
+        displayName: { type: "string", description: "New display label for the field" },
+        description: { type: "string", description: "New description for the field" },
+        requiredLevel: { type: "string", enum: ["None", "Recommended", "Required"], description: "New required level" },
+        maxLength: { type: "number", description: "New max length (String/Memo fields only)" },
+        minValue: { type: "number", description: "New minimum value (Integer/Decimal/Double fields only)" },
+        maxValue: { type: "number", description: "New maximum value (Integer/Decimal/Double fields only)" },
+      },
+    },
+  },
+  {
+    name: "add_choice_option",
+    description: "Add a new option value to an existing Choice (Picklist) or Multi-Select Choice field.",
+    inputSchema: {
+      type: "object",
+      required: ["entityLogicalName", "fieldLogicalName", "optionValue", "optionLabel"],
+      properties: {
+        entityLogicalName: { type: "string", description: "Logical name of the table, e.g. account" },
+        fieldLogicalName: { type: "string", description: "Logical name of the choice field" },
+        optionValue: { type: "number", description: "Integer value for the new option (use >= 100000000 for custom)" },
+        optionLabel: { type: "string", description: "Display label for the new option" },
+      },
+    },
+  },
+  {
+    name: "get_choice_options",
+    description: "List all current options on a Choice (Picklist) or Multi-Select Choice field.",
+    inputSchema: {
+      type: "object",
+      required: ["entityLogicalName", "fieldLogicalName"],
+      properties: {
+        entityLogicalName: { type: "string", description: "Logical name of the table, e.g. account" },
+        fieldLogicalName: { type: "string", description: "Logical name of the choice field" },
+      },
+    },
+  },
 ];
 
 // ----------------------------------------------------------------
@@ -793,6 +839,40 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
               client,
               str(args, "workflowId"),
               boolDef(args, "activate", true),
+            );
+            break;
+
+          case "update_column":
+            result = await Schema.updateColumnTool(
+              client,
+              str(args, "entityLogicalName"),
+              str(args, "fieldLogicalName"),
+              {
+                displayName: (args as Record<string, unknown>)["displayName"] as string | undefined,
+                description: (args as Record<string, unknown>)["description"] as string | undefined,
+                requiredLevel: (args as Record<string, unknown>)["requiredLevel"] as string | undefined,
+                maxLength: (args as Record<string, unknown>)["maxLength"] as number | undefined,
+                minValue: (args as Record<string, unknown>)["minValue"] as number | undefined,
+                maxValue: (args as Record<string, unknown>)["maxValue"] as number | undefined,
+              },
+            );
+            break;
+
+          case "add_choice_option":
+            result = await Schema.addChoiceOptionTool(
+              client,
+              str(args, "entityLogicalName"),
+              str(args, "fieldLogicalName"),
+              (args as Record<string, unknown>)["optionValue"] as number,
+              str(args, "optionLabel"),
+            );
+            break;
+
+          case "get_choice_options":
+            result = await Schema.getChoiceOptionsTool(
+              client,
+              str(args, "entityLogicalName"),
+              str(args, "fieldLogicalName"),
             );
             break;
 

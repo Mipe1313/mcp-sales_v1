@@ -433,3 +433,101 @@ export async function activateBusinessRuleTool(
     message: `Business rule ${workflowId} set to ${activate ? "Activated" : "Draft"}`,
   };
 }
+
+// ----------------------------------------------------------------
+// update_column
+// ----------------------------------------------------------------
+
+export async function updateColumnTool(
+  client: DataverseClient,
+  entityLogicalName: string,
+  fieldLogicalName: string,
+  updates: {
+    displayName?: string;
+    description?: string;
+    requiredLevel?: string;
+    maxLength?: number;
+    minValue?: number;
+    maxValue?: number;
+  },
+): Promise<unknown> {
+  if (!Object.values(updates).some((v) => v !== undefined)) {
+    throw new Error("At least one update property must be provided");
+  }
+
+  const validLevels = ["None", "Recommended", "Required"] as const;
+  type ValidLevel = (typeof validLevels)[number];
+  if (updates.requiredLevel && !validLevels.includes(updates.requiredLevel as ValidLevel)) {
+    throw new Error(`Invalid requiredLevel '${updates.requiredLevel}'. Must be: None, Recommended, or Required`);
+  }
+
+  await client.updateAttributeProperties(
+    entityLogicalName,
+    fieldLogicalName,
+    {
+      displayName: updates.displayName,
+      description: updates.description,
+      requiredLevel: updates.requiredLevel as ValidLevel | undefined,
+      maxLength: updates.maxLength,
+      minValue: updates.minValue,
+      maxValue: updates.maxValue,
+    },
+    client.solutionUniqueName,
+  );
+
+  return {
+    success: true,
+    entityLogicalName,
+    fieldLogicalName,
+    updates,
+    message: `Field '${fieldLogicalName}' on '${entityLogicalName}' updated successfully`,
+  };
+}
+
+// ----------------------------------------------------------------
+// add_choice_option
+// ----------------------------------------------------------------
+
+export async function addChoiceOptionTool(
+  client: DataverseClient,
+  entityLogicalName: string,
+  fieldLogicalName: string,
+  optionValue: number,
+  optionLabel: string,
+): Promise<unknown> {
+  await client.addOptionToPicklist(
+    entityLogicalName,
+    fieldLogicalName,
+    optionValue,
+    optionLabel,
+    client.solutionUniqueName,
+  );
+
+  return {
+    success: true,
+    entityLogicalName,
+    fieldLogicalName,
+    optionValue,
+    optionLabel,
+    message: `Option '${optionLabel}' (value: ${optionValue}) added to '${fieldLogicalName}' on '${entityLogicalName}'`,
+  };
+}
+
+// ----------------------------------------------------------------
+// get_choice_options
+// ----------------------------------------------------------------
+
+export async function getChoiceOptionsTool(
+  client: DataverseClient,
+  entityLogicalName: string,
+  fieldLogicalName: string,
+): Promise<unknown> {
+  const options = await client.getPicklistOptions(entityLogicalName, fieldLogicalName);
+  return {
+    entityLogicalName,
+    fieldLogicalName,
+    options,
+    count: options.length,
+  };
+}
+
