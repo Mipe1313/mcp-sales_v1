@@ -114,6 +114,99 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "list_tabs",
+    description: "List all tabs on a form with their names, labels, IDs, and section counts.",
+    inputSchema: {
+      type: "object",
+      required: ["formId"],
+      properties: {
+        formId: { type: "string", description: "GUID of the system form" },
+      },
+    },
+  },
+  {
+    name: "rename_tab",
+    description: "Rename the display label of an existing tab on a form. Set autoCommit=true to push immediately, or false (default) to stage.",
+    inputSchema: {
+      type: "object",
+      required: ["formId", "tabName", "newLabel"],
+      properties: {
+        formId: { type: "string" },
+        tabName: { type: "string", description: "Internal name of the tab to rename" },
+        newLabel: { type: "string", description: "New display label" },
+        autoCommit: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "remove_tab_from_form",
+    description: "Remove a tab (and all its sections and fields) from a form. Set autoCommit=true to push immediately, or false (default) to stage.",
+    inputSchema: {
+      type: "object",
+      required: ["formId", "tabName"],
+      properties: {
+        formId: { type: "string" },
+        tabName: { type: "string", description: "Internal name of the tab to remove" },
+        autoCommit: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "list_sections",
+    description: "List all sections in a tab on a form with their names, labels, and IDs.",
+    inputSchema: {
+      type: "object",
+      required: ["formId", "tabName"],
+      properties: {
+        formId: { type: "string" },
+        tabName: { type: "string", description: "Internal name of the tab" },
+      },
+    },
+  },
+  {
+    name: "rename_section",
+    description: "Rename the display label of an existing section on a form. Set autoCommit=true to push immediately, or false (default) to stage.",
+    inputSchema: {
+      type: "object",
+      required: ["formId", "tabName", "sectionName", "newLabel"],
+      properties: {
+        formId: { type: "string" },
+        tabName: { type: "string" },
+        sectionName: { type: "string", description: "Internal name of the section to rename" },
+        newLabel: { type: "string", description: "New display label" },
+        autoCommit: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "remove_section_from_form",
+    description: "Remove a section (and all its fields) from a tab on a form. Set autoCommit=true to push immediately, or false (default) to stage.",
+    inputSchema: {
+      type: "object",
+      required: ["formId", "tabName", "sectionName"],
+      properties: {
+        formId: { type: "string" },
+        tabName: { type: "string" },
+        sectionName: { type: "string", description: "Internal name of the section to remove" },
+        autoCommit: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "move_section_on_form",
+    description: "Move a section from its current tab to a different tab on the same form. Set autoCommit=true to push immediately, or false (default) to stage.",
+    inputSchema: {
+      type: "object",
+      required: ["formId", "sectionName", "targetTabName"],
+      properties: {
+        formId: { type: "string" },
+        sectionName: { type: "string", description: "Internal name of the section to move" },
+        targetTabName: { type: "string", description: "Internal name of the destination tab" },
+        autoCommit: { type: "boolean" },
+      },
+    },
+  },
+  {
     name: "add_field_to_form",
     description:
       "Add a field control to a specific tab and section on an account form. " +
@@ -600,6 +693,74 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
               client,
               str(args, "entityName"),
               str(args, "fieldName"),
+            );
+            break;
+
+          case "list_tabs":
+            result = await Forms.listTabsOnFormTool(client, formCache, str(args, "formId"));
+            break;
+
+          case "rename_tab":
+            result = await Forms.renameTabTool(
+              client,
+              formCache,
+              str(args, "formId"),
+              str(args, "tabName"),
+              str(args, "newLabel"),
+              boolDef(args, "autoCommit", false),
+            );
+            break;
+
+          case "remove_tab_from_form":
+            result = await Forms.removeTabFromFormTool(
+              client,
+              formCache,
+              str(args, "formId"),
+              str(args, "tabName"),
+              boolDef(args, "autoCommit", false),
+            );
+            break;
+
+          case "list_sections":
+            result = await Forms.listSectionsOnFormTool(
+              client,
+              formCache,
+              str(args, "formId"),
+              str(args, "tabName"),
+            );
+            break;
+
+          case "rename_section":
+            result = await Forms.renameSectionTool(
+              client,
+              formCache,
+              str(args, "formId"),
+              str(args, "tabName"),
+              str(args, "sectionName"),
+              str(args, "newLabel"),
+              boolDef(args, "autoCommit", false),
+            );
+            break;
+
+          case "remove_section_from_form":
+            result = await Forms.removeSectionFromFormTool(
+              client,
+              formCache,
+              str(args, "formId"),
+              str(args, "tabName"),
+              str(args, "sectionName"),
+              boolDef(args, "autoCommit", false),
+            );
+            break;
+
+          case "move_section_on_form":
+            result = await Forms.moveSectionOnFormTool(
+              client,
+              formCache,
+              str(args, "formId"),
+              str(args, "sectionName"),
+              str(args, "targetTabName"),
+              boolDef(args, "autoCommit", false),
             );
             break;
 

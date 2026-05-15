@@ -241,9 +241,11 @@ export function removeFieldFromForm(formXml: string, fieldName: string): string 
       for (const sec of toArray(
         ((col["sections"] as Record<string, unknown>)?.["section"]),
       ) as Record<string, unknown>[]) {
-        const rows = toArray(
-          ((sec["rows"] as Record<string, unknown>)?.["row"]),
-        ) as Record<string, unknown>[];
+        const rowsWrapper = sec["rows"];
+        // rows may be an empty string "" when the section has no rows in the XML
+        const rows = typeof rowsWrapper === "object" && rowsWrapper !== null
+          ? toArray((rowsWrapper as Record<string, unknown>)["row"]) as Record<string, unknown>[]
+          : [] as Record<string, unknown>[];
 
         for (const row of rows) {
           const cells = toArray(row["cell"]) as Record<string, unknown>[];
@@ -255,7 +257,10 @@ export function removeFieldFromForm(formXml: string, fieldName: string): string 
           });
         }
 
-        // Remove rows that became empty
+        // Remove rows that became empty; ensure rows wrapper is an object
+        if (typeof sec["rows"] !== "object" || sec["rows"] === null) {
+          sec["rows"] = { row: [] };
+        }
         (sec["rows"] as Record<string, unknown>)["row"] = rows.filter(
           (r) => toArray(r["cell"]).length > 0,
         );
@@ -384,6 +389,265 @@ export function moveFieldOnForm(
     rowsWrapper["row"] = rowsWrapper["row"] !== undefined ? [rowsWrapper["row"]] : [];
   }
   (rowsWrapper["row"] as unknown[]).push({ cell: [extracted] });
+
+  return buildFormXml(form);
+}
+
+// ---------------------------------------------------------------
+// Tab / section CRUD
+// ---------------------------------------------------------------
+
+/** List all tabs on a form with their names, labels, IDs and section counts. */
+export function listTabsOnForm(
+  formXml: string,
+): Array<{ name: string; label: string; id: string; sectionCount: number }> {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  return tabs.map((tab) => {
+    const name = String(tab["@_name"] ?? "");
+    const id = String(tab["@_id"] ?? "");
+    const labels = toArray(
+      (tab["labels"] as Record<string, unknown>)?.["label"],
+    ) as Record<string, unknown>[];
+    const label = String(labels[0]?.["@_description"] ?? name);
+
+    let sectionCount = 0;
+    for (const col of toArray(
+      (tab["columns"] as Record<string, unknown>)?.["column"],
+    ) as Record<string, unknown>[]) {
+      sectionCount += toArray((col["sections"] as Record<string, unknown>)?.["section"]).length;
+    }
+
+    return { name, label, id, sectionCount };
+  });
+}
+
+/** Update a tab's display label. */
+export function renameTab(
+  formXml: string,
+  tabName: string,
+  newLabel: string,
+  languageCode = 1033,
+): string {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  const tab = tabs.find((t) => t["@_name"] === tabName);
+  if (!tab) throw new Error(`Tab '${tabName}' not found`);
+
+  const labels = toArray(
+    (tab["labels"] as Record<string, unknown>)?.["label"],
+  ) as Record<string, unknown>[];
+  const existing = labels.find((l) => l["@_languagecode"] === String(languageCode));
+  if (existing) {
+    existing["@_description"] = newLabel;
+  } else {
+    if (!tab["labels"]) tab["labels"] = { label: [] };
+    (tab["labels"] as Record<string, unknown>)["label"] = [
+      ...labels,
+      { "@_description": newLabel, "@_languagecode": String(languageCode) },
+    ];
+  }
+
+  return buildFormXml(form);
+}
+
+/** Remove a tab and all its contents from the form. */
+export function removeTabFromForm(formXml: string, tabName: string): string {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  if (!root["tabs"]) throw new Error(`Tab '${tabName}' not found`);
+
+  const tabsWrapper = root["tabs"] as Record<string, unknown>;
+  const tabs = toArray(tabsWrapper["tab"]) as Record<string, unknown>[];
+  const filtered = tabs.filter((t) => t["@_name"] !== tabName);
+  if (filtered.length === tabs.length) throw new Error(`Tab '${tabName}' not found`);
+
+  tabsWrapper["tab"] = filtered;
+  return buildFormXml(form);
+}
+
+/** List all sections in a tab with their names, labels and IDs. */
+export function listSectionsOnForm(
+  formXml: string,
+  tabName: string,
+): Array<{ name: string; label: string; id: string }> {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  const tab = tabs.find((t) => t["@_name"] === tabName);
+  if (!tab) throw new Error(`Tab '${tabName}' not found`);
+
+  const result: Array<{ name: string; label: string; id: string }> = [];
+  for (const col of toArray(
+    (tab["columns"] as Record<string, unknown>)?.["column"],
+  ) as Record<string, unknown>[]) {
+    for (const sec of toArray(
+      (col["sections"] as Record<string, unknown>)?.["section"],
+    ) as Record<string, unknown>[]) {
+      const name = String(sec["@_name"] ?? "");
+      const id = String(sec["@_id"] ?? "");
+      const labels = toArray(
+        (sec["labels"] as Record<string, unknown>)?.["label"],
+      ) as Record<string, unknown>[];
+      const label = String(labels[0]?.["@_description"] ?? name);
+      result.push({ name, label, id });
+    }
+  }
+
+  return result;
+}
+
+/** Update a section's display label. */
+export function renameSection(
+  formXml: string,
+  tabName: string,
+  sectionName: string,
+  newLabel: string,
+  languageCode = 1033,
+): string {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  const tab = tabs.find((t) => t["@_name"] === tabName);
+  if (!tab) throw new Error(`Tab '${tabName}' not found`);
+
+  let found = false;
+  for (const col of toArray(
+    (tab["columns"] as Record<string, unknown>)?.["column"],
+  ) as Record<string, unknown>[]) {
+    for (const sec of toArray(
+      (col["sections"] as Record<string, unknown>)?.["section"],
+    ) as Record<string, unknown>[]) {
+      if (sec["@_name"] === sectionName) {
+        const labels = toArray(
+          (sec["labels"] as Record<string, unknown>)?.["label"],
+        ) as Record<string, unknown>[];
+        const existing = labels.find((l) => l["@_languagecode"] === String(languageCode));
+        if (existing) {
+          existing["@_description"] = newLabel;
+        } else {
+          if (!sec["labels"]) sec["labels"] = { label: [] };
+          (sec["labels"] as Record<string, unknown>)["label"] = [
+            ...labels,
+            { "@_description": newLabel, "@_languagecode": String(languageCode) },
+          ];
+        }
+        found = true;
+      }
+    }
+  }
+
+  if (!found) throw new Error(`Section '${sectionName}' not found in tab '${tabName}'`);
+  return buildFormXml(form);
+}
+
+/** Remove a section (and all its fields) from a tab. */
+export function removeSectionFromForm(
+  formXml: string,
+  tabName: string,
+  sectionName: string,
+): string {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  const tab = tabs.find((t) => t["@_name"] === tabName);
+  if (!tab) throw new Error(`Tab '${tabName}' not found`);
+
+  let found = false;
+  for (const col of toArray(
+    (tab["columns"] as Record<string, unknown>)?.["column"],
+  ) as Record<string, unknown>[]) {
+    const sw = col["sections"] as Record<string, unknown> | undefined;
+    if (!sw) continue;
+    const before = toArray(sw["section"]) as Record<string, unknown>[];
+    const after = before.filter((s) => s["@_name"] !== sectionName);
+    if (after.length < before.length) {
+      sw["section"] = after;
+      found = true;
+    }
+  }
+
+  if (!found) throw new Error(`Section '${sectionName}' not found in tab '${tabName}'`);
+  return buildFormXml(form);
+}
+
+/** Move a section from its current tab to a different tab (appended to the first column). */
+export function moveSectionOnForm(
+  formXml: string,
+  sectionName: string,
+  targetTabName: string,
+): string {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  // Extract section from its current location
+  let extracted: Record<string, unknown> | undefined;
+  for (const tab of tabs) {
+    for (const col of toArray(
+      (tab["columns"] as Record<string, unknown>)?.["column"],
+    ) as Record<string, unknown>[]) {
+      const sw = col["sections"] as Record<string, unknown> | undefined;
+      if (!sw) continue;
+      const secs = toArray(sw["section"]) as Record<string, unknown>[];
+      const idx = secs.findIndex((s) => s["@_name"] === sectionName);
+      if (idx !== -1) {
+        extracted = secs[idx];
+        sw["section"] = secs.filter((_, i) => i !== idx);
+        break;
+      }
+    }
+    if (extracted) break;
+  }
+
+  if (!extracted) throw new Error(`Section '${sectionName}' not found`);
+
+  // Append to the first column of the target tab
+  const targetTab = tabs.find((t) => t["@_name"] === targetTabName);
+  if (!targetTab) throw new Error(`Target tab '${targetTabName}' not found`);
+
+  const columns = toArray(
+    (targetTab["columns"] as Record<string, unknown>)?.["column"],
+  ) as Record<string, unknown>[];
+  if (columns.length === 0) {
+    const newCol: Record<string, unknown> = { "@_width": "100%", sections: { section: [] } };
+    if (!targetTab["columns"]) targetTab["columns"] = { column: [] };
+    (targetTab["columns"] as Record<string, unknown>)["column"] = [newCol];
+    columns.push(newCol);
+  }
+
+  const col = columns[0];
+  if (!col["sections"]) col["sections"] = { section: [] };
+  const sw = col["sections"] as Record<string, unknown>;
+  sw["section"] = [
+    ...(toArray(sw["section"]) as Record<string, unknown>[]),
+    extracted,
+  ];
 
   return buildFormXml(form);
 }

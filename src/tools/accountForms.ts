@@ -5,8 +5,15 @@ import {
   addSectionToForm,
   addTabToForm,
   getClassIdForAttributeType,
+  listSectionsOnForm,
+  listTabsOnForm,
   moveFieldOnForm,
+  moveSectionOnForm,
   removeFieldFromForm,
+  removeSectionFromForm,
+  removeTabFromForm,
+  renameSection,
+  renameTab,
   setFieldProperties,
 } from "../formUtils.js";
 import { addFormToSolution, ensureSolution } from "./solution.js";
@@ -297,6 +304,109 @@ export async function ensureSolutionTool(client: DataverseClient) {
 export async function addFormToSolutionTool(client: DataverseClient, formId: string) {
   await addFormToSolution(client, formId);
   return { success: true, message: `Form '${formId}' added to MCPautoSetup solution` };
+}
+
+// ----------------------------------------------------------------
+// Tab / section CRUD tool handlers
+// ----------------------------------------------------------------
+
+export async function listTabsOnFormTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+) {
+  const xml = cache.get(formId)?.xml ?? (await client.getFormById(formId)).formxml ?? "";
+  return { tabs: listTabsOnForm(xml) };
+}
+
+export async function renameTabTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+  tabName: string,
+  newLabel: string,
+  autoCommit: boolean,
+) {
+  const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
+  const xml = await getXml(client, cache, cloneId);
+  const updatedXml = renameTab(xml, tabName, newLabel);
+  const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
+  const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Tab '${tabName}' renamed to '${newLabel}'${cloneNote} [${status}]` };
+}
+
+export async function removeTabFromFormTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+  tabName: string,
+  autoCommit: boolean,
+) {
+  const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
+  const xml = await getXml(client, cache, cloneId);
+  const updatedXml = removeTabFromForm(xml, tabName);
+  const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
+  const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Tab '${tabName}' removed from form${cloneNote} [${status}]` };
+}
+
+export async function listSectionsOnFormTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+  tabName: string,
+) {
+  const xml = cache.get(formId)?.xml ?? (await client.getFormById(formId)).formxml ?? "";
+  return { sections: listSectionsOnForm(xml, tabName) };
+}
+
+export async function renameSectionTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+  tabName: string,
+  sectionName: string,
+  newLabel: string,
+  autoCommit: boolean,
+) {
+  const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
+  const xml = await getXml(client, cache, cloneId);
+  const updatedXml = renameSection(xml, tabName, sectionName, newLabel);
+  const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
+  const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' renamed to '${newLabel}'${cloneNote} [${status}]` };
+}
+
+export async function removeSectionFromFormTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+  tabName: string,
+  sectionName: string,
+  autoCommit: boolean,
+) {
+  const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
+  const xml = await getXml(client, cache, cloneId);
+  const updatedXml = removeSectionFromForm(xml, tabName, sectionName);
+  const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
+  const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' removed from tab '${tabName}'${cloneNote} [${status}]` };
+}
+
+export async function moveSectionOnFormTool(
+  client: DataverseClient,
+  cache: FormCache,
+  formId: string,
+  sectionName: string,
+  targetTabName: string,
+  autoCommit: boolean,
+) {
+  const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
+  const xml = await getXml(client, cache, cloneId);
+  const updatedXml = moveSectionOnForm(xml, sectionName, targetTabName);
+  const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
+  const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' moved to tab '${targetTabName}'${cloneNote} [${status}]` };
 }
 
 export async function publishCustomisations(client: DataverseClient) {
