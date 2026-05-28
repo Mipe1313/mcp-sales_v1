@@ -86,6 +86,72 @@ export class DataverseClient {
   }
 
   // ------------------------------------------------------------------
+  // Connection test
+  // ------------------------------------------------------------------
+
+  /**
+   * Validates all layers of the connection:
+   * 1. OAuth token acquisition (tenantId + clientId + clientSecret)
+   * 2. Dataverse reachability (environmentUrl)
+   * 3. Dataverse API access (reads WhoAmI — confirms app user exists + has Dataverse access)
+   * Returns a structured result with pass/fail per layer and the calling user's SystemUserId.
+   */
+  async testConnection(): Promise<{
+    tokenOk: boolean;
+    tokenError?: string;
+    dataverseOk: boolean;
+    dataverseError?: string;
+    whoAmI?: { userId: string; businessUnitId: string; organizationId: string };
+  }> {
+    // Layer 1: token
+    let token: string;
+    try {
+      token = await getAccessToken(this.config);
+    } catch (err) {
+      return {
+        tokenOk: false,
+        tokenError: err instanceof Error ? err.message : String(err),
+        dataverseOk: false,
+        dataverseError: "Skipped — token acquisition failed",
+      };
+    }
+
+    // Layer 2 + 3: WhoAmI
+    try {
+      const response = await axios.get<{
+        UserId: string;
+        BusinessUnitId: string;
+        OrganizationId: string;
+      }>(`${this.baseUrl}/WhoAmI`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "OData-MaxVersion": "4.0",
+          "OData-Version": "4.0",
+          Accept: "application/json",
+        },
+      });
+      return {
+        tokenOk: true,
+        dataverseOk: true,
+        whoAmI: {
+          userId: response.data.UserId,
+          businessUnitId: response.data.BusinessUnitId,
+          organizationId: response.data.OrganizationId,
+        },
+      };
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      const msg = (err as { response?: { data?: { error?: { message?: string } } } })
+        ?.response?.data?.error?.message ?? (err instanceof Error ? err.message : String(err));
+      return {
+        tokenOk: true,
+        dataverseOk: false,
+        dataverseError: `HTTP ${status ?? "?"}: ${msg}`,
+      };
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Forms (systemform)
   // ------------------------------------------------------------------
 
@@ -658,6 +724,73 @@ export class DataverseClient {
       (res.headers["odata-entityid"] as string | undefined) ??
         (res.headers["location"] as string | undefined),
     );
+  }
+
+  /**
+   * Create a Lookup attribute by creating a One-to-Many relationship with an embedded LookupAttributeMetadata.
+   */
+  async createLookupAttribute(
+    referencingEntity: string,
+    logicalName: string,
+    displayName: string,
+    referencedEntity: string,
+    options: {
+      requiredLevel?: "None" | "Recommended" | "Required";
+      description?: string;
+      relationshipSchemaName?: string;
+    } = {},
+    solutionUniqueName?: string,
+  ): Promise<{ metadataId: string; relationshipSchemaName: string }> {
+    const h = await this.headers();
+    if (solutionUniqueName) h["MSCRM.SolutionUniqueName"] = solutionUniqueName;
+
+    const schemaName = this.toSchemaName(logicalName);
+    const relSchemaName =
+      options.relationshipSchemaName ??
+      `${referencingEntity}_${referencedEntity}_${schemaName}`
+        .replace(/[^a-zA-Z0-9_]/g, "_")
+        .substring(0, 100);
+
+    const body = {
+      "@odata.type": "Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata",
+      SchemaName: relSchemaName,
+      ReferencedEntity: referencedEntity,
+      ReferencingEntity: referencingEntity,
+      Lookup: {
+        "@odata.type": "Microsoft.Dynamics.CRM.LookupAttributeMetadata",
+        SchemaName: schemaName,
+        LogicalName: logicalName,
+        DisplayName: this.makeLabel(displayName),
+        Description: options.description ? this.makeLabel(options.description) : this.makeLabel(""),
+        RequiredLevel: this.makeRequiredLevel(options.requiredLevel ?? "None"),
+      },
+      ReferencedEntityNavigationPropertyName: relSchemaName,
+      ReferencingEntityNavigationPropertyName: logicalName,
+      AssociatedMenuConfiguration: {
+        Behavior: "UseCollectionName",
+        Group: "Details",
+        Order: null,
+        IsCustomizable: true,
+      },
+      CascadeConfiguration: {
+        Assign: "NoCascade",
+        Delete: "RemoveLink",
+        Merge: "NoCascade",
+        Reparent: "NoCascade",
+        Share: "NoCascade",
+        Unshare: "NoCascade",
+      },
+    };
+
+    const res = await this.withRetryOnLock(() =>
+      axios.post(`${this.baseUrl}/RelationshipDefinitions`, body, { headers: h }),
+    );
+    const location =
+      (res.headers["odata-entityid"] as string | undefined) ??
+      (res.headers["location"] as string | undefined) ??
+      "";
+    const metadataId = this.extractId(location);
+    return { metadataId, relationshipSchemaName: relSchemaName };
   }
 
   /** Fetch extended attribute metadata including MetadataId and AttributeTypeName. */

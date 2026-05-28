@@ -109,3 +109,17 @@ export interface AttributeFullMetadata {
   RequiredLevel: { Value: string };
   DisplayName?: { UserLocalizedLabel?: { Label?: string } };
 }
+
+/**
+ * Returned by tool handlers when input is ambiguous or a referenced name was not found.
+ * The agent must surface the candidates to the user and ask for clarification.
+ */
+export interface ClarificationResponse {
+  needsClarification: true;
+  /** Which input parameter is ambiguous */
+  field: string;
+  /** Human-readable explanation */
+  message: string;
+  /** Available options the user can choose from */
+  candidates: Array<{ name: string; label: string; id?: string }>;
+}

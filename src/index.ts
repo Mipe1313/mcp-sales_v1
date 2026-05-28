@@ -30,17 +30,19 @@ const TOOL_DEFINITIONS = [
   {
     name: "configure_environment",
     description:
-      "Set the target Dynamics 365 / Dataverse tenant and environment for this session. " +
-      "Call this first when you need to target a specific tenant or environment other than the server defaults.",
+      "Optionally override the Dynamics 365 / Dataverse tenant and environment for this session. " +
+      "The server already has a default tenant and environment pre-configured — only call this tool " +
+      "if the user explicitly wants to use a DIFFERENT tenant or environment URL. " +
+      "If the user says 'default', 'use default', or does not mention a specific tenant, do NOT call this tool. " +
+      "The server's app registration credentials are managed server-side and must not be passed here.",
     inputSchema: {
       type: "object",
+      required: [],
       properties: {
-        tenantId: { type: "string", description: "Azure AD tenant ID (GUID)" },
-        clientId: { type: "string", description: "App registration client ID (GUID)" },
-        clientSecret: { type: "string", description: "App registration client secret" },
+        tenantId: { type: "string", description: "Customer's Azure AD tenant ID (GUID)" },
         environmentUrl: {
           type: "string",
-          description: "Dataverse environment URL, e.g. https://orgname.crm4.dynamics.com",
+          description: "Customer's Dataverse environment URL, e.g. https://orgname.crm4.dynamics.com",
         },
         targetEntity: {
           type: "string",
@@ -52,6 +54,14 @@ const TOOL_DEFINITIONS = [
         },
       },
     },
+  },
+  {
+    name: "test_connection",
+    description:
+      "Validate the current session's Dataverse connection. " +
+      "Tests token acquisition, environment reachability, and API access (WhoAmI). " +
+      "Call this after configure_environment to confirm the customer's setup is correct before making any changes.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "list_account_forms",
@@ -458,6 +468,27 @@ const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: "create_lookup_column",
+    description:
+      "Create a Lookup field on a Dataverse table that references another table. " +
+      "The user must specify which table to look up (referencedEntity) and which field from that table to display (displayFieldLogicalName). " +
+      "Note: the standard Dataverse lookup control always shows the primary name field of the referenced table.",
+    inputSchema: {
+      type: "object",
+      required: ["entityLogicalName", "fieldLogicalName", "displayName", "referencedEntity", "displayFieldLogicalName"],
+      properties: {
+        entityLogicalName: { type: "string", description: "Logical name of the table to add the lookup to, e.g. account" },
+        fieldLogicalName: { type: "string", description: "Logical name for the new lookup field including prefix, e.g. fmk_contactid" },
+        displayName: { type: "string", description: "User-visible label for the lookup field" },
+        referencedEntity: { type: "string", description: "Logical name of the table being looked up, e.g. contact" },
+        displayFieldLogicalName: { type: "string", description: "Logical name of the field on the referenced table to display, e.g. fullname" },
+        requiredLevel: { type: "string", enum: ["None", "Recommended", "Required"], description: "Required level (default: None)" },
+        description: { type: "string", description: "Optional description for the field" },
+        relationshipSchemaName: { type: "string", description: "Optional custom schema name for the relationship (auto-generated if omitted)" },
+      },
+    },
+  },
+  {
     name: "set_field_requirement",
     description:
       "Set the required level of an existing field on a Dataverse table. " +
@@ -630,30 +661,41 @@ const TOOL_DEFINITIONS = [
 
 function createServer(sessionCfg: { current: SessionConfig }): Server {
   const server = new Server(
-    { name: "dataverse-form-mcp", version: "1.0.0" },
-    { capabilities: { tools: {} } },
+    { name: "dataverse-account-forms-mcp", version: "1.0.0" },
+    {
+      capabilities: { tools: {} },
+      instructions: "Customise Dynamics 365 Account entity forms, columns, views, and business rules via Dataverse Web API. Supports creating and editing form layouts including tabs, sections, and fields.",
+    },
   );
 
   // Per-session form XML staging cache
   const formCache: FormCache = new Map();
 
-  // Build a DataverseClient from session config merged with env-var defaults
+  // Build a DataverseClient — clientId/clientSecret are ALWAYS server-side only.
+  // Customers provide tenantId + environmentUrl via configure_environment.
   function getClient(): DataverseClient {
     const cfg: DynamicsConfig = {
       tenantId: sessionCfg.current.tenantId ?? process.env["TENANT_ID"] ?? "",
-      clientId: sessionCfg.current.clientId ?? process.env["CLIENT_ID"] ?? "",
-      clientSecret: sessionCfg.current.clientSecret ?? process.env["CLIENT_SECRET"] ?? "",
+      clientId: process.env["CLIENT_ID"] ?? "",
+      clientSecret: process.env["CLIENT_SECRET"] ?? "",
       environmentUrl: sessionCfg.current.environmentUrl ?? process.env["ENVIRONMENT_URL"] ?? "",
       targetEntity: sessionCfg.current.targetEntity ?? process.env["TARGET_ENTITY"] ?? "account",
       targetAppUniqueName: sessionCfg.current.targetAppUniqueName ?? process.env["TARGET_APP_UNIQUE_NAME"] ?? undefined,
       solutionUniqueName: sessionCfg.current.solutionUniqueName ?? process.env["SOLUTION_UNIQUE_NAME"] ?? "MCPautoSetup",
     };
 
-    if (!cfg.tenantId || !cfg.clientId || !cfg.clientSecret || !cfg.environmentUrl) {
+    if (!cfg.tenantId || !cfg.environmentUrl) {
       throw new McpError(
         ErrorCode.InvalidParams,
-        "Dataverse connection not configured. " +
-          "Call configure_environment or set TENANT_ID, CLIENT_ID, CLIENT_SECRET, ENVIRONMENT_URL.",
+        "Dataverse environment not configured. " +
+          "Call configure_environment with tenantId and environmentUrl, " +
+          "or set TENANT_ID and ENVIRONMENT_URL in the server .env file.",
+      );
+    }
+    if (!cfg.clientId || !cfg.clientSecret) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        "Server is not configured: CLIENT_ID and CLIENT_SECRET must be set in the server environment.",
       );
     }
     return new DataverseClient(cfg);
@@ -671,21 +713,54 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
       let result: unknown;
 
       if (name === "configure_environment") {
+        // Only allow tenantId, environmentUrl, targetEntity, targetAppUniqueName from callers.
+        // clientId and clientSecret are server-side only and cannot be overridden.
+        const a = args as Record<string, unknown>;
         sessionCfg.current = {
           ...sessionCfg.current,
-          ...(args as SessionConfig),
+          tenantId: a["tenantId"] as string | undefined,
+          environmentUrl: a["environmentUrl"] as string | undefined,
+          targetEntity: a["targetEntity"] as string | undefined,
+          targetAppUniqueName: a["targetAppUniqueName"] as string | undefined,
         };
-        result = { success: true, message: "Environment configured for this session" };
+        result = { success: true, message: `Environment configured: tenant=${sessionCfg.current.tenantId}, url=${sessionCfg.current.environmentUrl}` };
       } else {
         const client = getClient();
 
         switch (name) {
+          case "test_connection": {
+            const r = await client.testConnection();
+            if (!r.tokenOk) {
+              result = {
+                success: false,
+                stage: "token",
+                message: `❌ Token acquisition failed. Check tenantId, clientId, clientSecret.`,
+                detail: r.tokenError,
+              };
+            } else if (!r.dataverseOk) {
+              result = {
+                success: false,
+                stage: "dataverse",
+                message: `✅ Token OK  |  ❌ Dataverse API call failed. Check environmentUrl and that the app has an Application User with a security role in PPAC.`,
+                detail: r.dataverseError,
+              };
+            } else {
+              result = {
+                success: true,
+                stage: "all",
+                message: `✅ Token OK  |  ✅ Dataverse API OK  |  ✅ App user confirmed`,
+                whoAmI: r.whoAmI,
+              };
+            }
+            break;
+          }
+
           case "list_account_forms":
             result = await Forms.listAccountForms(client);
             break;
 
           case "get_form_xml":
-            result = await Forms.getFormXmlContent(client, str(args, "formId"));
+            result = await Forms.getFormXmlContent(client, guid(args, "formId"));
             break;
 
           case "get_attribute_metadata":
@@ -697,14 +772,14 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             break;
 
           case "list_tabs":
-            result = await Forms.listTabsOnFormTool(client, formCache, str(args, "formId"));
+            result = await Forms.listTabsOnFormTool(client, formCache, guid(args, "formId"));
             break;
 
           case "rename_tab":
             result = await Forms.renameTabTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               str(args, "newLabel"),
               boolDef(args, "autoCommit", false),
@@ -715,7 +790,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.removeTabFromFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               boolDef(args, "autoCommit", false),
             );
@@ -725,7 +800,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.listSectionsOnFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
             );
             break;
@@ -734,7 +809,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.renameSectionTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               str(args, "sectionName"),
               str(args, "newLabel"),
@@ -746,7 +821,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.removeSectionFromFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               str(args, "sectionName"),
               boolDef(args, "autoCommit", false),
@@ -757,7 +832,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.moveSectionOnFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "sectionName"),
               str(args, "targetTabName"),
               boolDef(args, "autoCommit", false),
@@ -768,7 +843,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.addTabToFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               str(args, "tabLabel"),
               boolDef(args, "autoCommit", false),
@@ -779,7 +854,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.addSectionToFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               str(args, "sectionName"),
               str(args, "sectionLabel"),
@@ -791,7 +866,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.addFieldToFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "tabName"),
               str(args, "sectionName"),
               str(args, "fieldName"),
@@ -805,7 +880,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.removeFieldFromFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "fieldName"),
               boolDef(args, "autoCommit", false),
             );
@@ -815,7 +890,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.setFieldPropertiesTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "fieldName"),
               {
                 disabled: bool(args, "disabled"),
@@ -829,7 +904,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Forms.moveFieldOnFormTool(
               client,
               formCache,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "fieldName"),
               str(args, "targetTabName"),
               str(args, "targetSectionName"),
@@ -840,7 +915,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
           case "update_form_xml_raw":
             result = await Forms.updateFormXmlRaw(
               client,
-              str(args, "formId"),
+              guid(args, "formId"),
               str(args, "formXml"),
             );
             break;
@@ -850,7 +925,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             break;
 
           case "add_form_to_solution":
-            result = await Forms.addFormToSolutionTool(client, str(args, "formId"));
+            result = await Forms.addFormToSolutionTool(client, guid(args, "formId"));
             break;
 
           case "publish_customisations":
@@ -876,7 +951,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
           case "add_form_to_app":
             result = await Solution.addFormToAppTool(
               client,
-              str(args, "formId"),
+              guid(args, "formId"),
               (args as Record<string, unknown>)["appUniqueName"] as string | undefined,
             );
             break;
@@ -889,11 +964,11 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             break;
 
           case "commit_form_changes":
-            result = await Forms.commitFormChanges(client, formCache, str(args, "formId"));
+            result = await Forms.commitFormChanges(client, formCache, guid(args, "formId"));
             break;
 
           case "discard_form_changes":
-            result = await Forms.discardFormChanges(formCache, str(args, "formId"));
+            result = await Forms.discardFormChanges(formCache, guid(args, "formId"));
             break;
 
           case "list_staged_changes":
@@ -943,6 +1018,22 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             break;
           }
 
+          case "create_lookup_column":
+            result = await Schema.createLookupColumnTool(
+              client,
+              str(args, "entityLogicalName"),
+              str(args, "fieldLogicalName"),
+              str(args, "displayName"),
+              str(args, "referencedEntity"),
+              str(args, "displayFieldLogicalName"),
+              {
+                requiredLevel: (args as Record<string, unknown>)["requiredLevel"] as string | undefined,
+                description: (args as Record<string, unknown>)["description"] as string | undefined,
+                relationshipSchemaName: (args as Record<string, unknown>)["relationshipSchemaName"] as string | undefined,
+              },
+            );
+            break;
+
           case "set_field_requirement":
             result = await Schema.setFieldRequirementTool(
               client,
@@ -964,7 +1055,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
             result = await Schema.addFieldToViewTool(
               client,
               str(args, "entityLogicalName"),
-              str(args, "viewId"),
+              guid(args, "viewId"),
               str(args, "fieldLogicalName"),
               (args as Record<string, unknown>)["width"] as number | undefined,
             );
@@ -998,7 +1089,7 @@ function createServer(sessionCfg: { current: SessionConfig }): Server {
           case "activate_business_rule":
             result = await Schema.activateBusinessRuleTool(
               client,
-              str(args, "workflowId"),
+              guid(args, "workflowId"),
               boolDef(args, "activate", true),
             );
             break;
@@ -1071,6 +1162,20 @@ function str(args: Record<string, unknown>, key: string): string {
   const v = args[key];
   if (typeof v !== "string" || !v) {
     throw new McpError(ErrorCode.InvalidParams, `Parameter '${key}' is required and must be a non-empty string`);
+  }
+  return v;
+}
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Validates that a string param is a well-formed GUID. */
+function guid(args: Record<string, unknown>, key: string): string {
+  const v = str(args, key);
+  if (!GUID_RE.test(v)) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `Parameter '${key}' must be a valid GUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), got: '${v}'`,
+    );
   }
   return v;
 }

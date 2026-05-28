@@ -1,9 +1,11 @@
 import type { DataverseClient } from "../dataverse.js";
-import type { FormCache } from "../types.js";
+import type { ClarificationResponse, FormCache } from "../types.js";
 import {
   addFieldToForm,
   addSectionToForm,
   addTabToForm,
+  findSectionCandidates,
+  findTabCandidates,
   getClassIdForAttributeType,
   listSectionsOnForm,
   listTabsOnForm,
@@ -16,7 +18,34 @@ import {
   renameTab,
   setFieldProperties,
 } from "../formUtils.js";
+import type { SectionCandidate, TabCandidate } from "../formUtils.js";
 import { addFormToSolution, ensureSolution } from "./solution.js";
+
+// ----------------------------------------------------------------
+// Clarification helpers
+// ----------------------------------------------------------------
+
+function tabNotFound(tabName: string, candidates: TabCandidate[]): ClarificationResponse {
+  return {
+    needsClarification: true,
+    field: "tabName",
+    message: `Tab '${tabName}' was not found on this form. Please confirm the tab name from the candidates listed.`,
+    candidates,
+  };
+}
+
+function sectionNotFound(
+  sectionName: string,
+  tabName: string,
+  candidates: SectionCandidate[],
+): ClarificationResponse {
+  return {
+    needsClarification: true,
+    field: "sectionName",
+    message: `Section '${sectionName}' was not found in tab '${tabName}'. Please confirm the section name from the candidates listed.`,
+    candidates,
+  };
+}
 
 // ----------------------------------------------------------------
 // Clone management
@@ -140,11 +169,20 @@ export async function addFieldToFormTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, tabName);
+  if (!tabMatch) return tabNotFound(tabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? tabName);
+
+  const { match: secMatch, candidates: secCandidates } = findSectionCandidates(tabMatch, sectionName);
+  if (!secMatch) return sectionNotFound(sectionName, resolvedTab, secCandidates);
+  const resolvedSection = String(secMatch["@_name"] ?? sectionName);
+
   const classId = await resolveClassId(client, fieldName, attributeType);
-  const updatedXml = addFieldToForm(xml, tabName, sectionName, fieldName, classId, fieldLabel);
+  const updatedXml = addFieldToForm(xml, resolvedTab, resolvedSection, fieldName, classId, fieldLabel);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Field '${fieldName}' added to '${tabName}/${sectionName}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Field '${fieldName}' added to '${resolvedTab}/${resolvedSection}'${cloneNote} [${status}]` };
 }
 
 export async function removeFieldFromFormTool(
@@ -205,10 +243,15 @@ export async function addSectionToFormTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = addSectionToForm(xml, tabName, sectionName, sectionLabel);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, tabName);
+  if (!tabMatch) return tabNotFound(tabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? tabName);
+
+  const updatedXml = addSectionToForm(xml, resolvedTab, sectionName, sectionLabel);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionLabel}' added to tab '${tabName}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionLabel}' added to tab '${resolvedTab}'${cloneNote} [${status}]` };
 }
 
 export async function moveFieldOnFormTool(
@@ -222,10 +265,19 @@ export async function moveFieldOnFormTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = moveFieldOnForm(xml, fieldName, targetTabName, targetSectionName);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, targetTabName);
+  if (!tabMatch) return tabNotFound(targetTabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? targetTabName);
+
+  const { match: secMatch, candidates: secCandidates } = findSectionCandidates(tabMatch, targetSectionName);
+  if (!secMatch) return sectionNotFound(targetSectionName, resolvedTab, secCandidates);
+  const resolvedSection = String(secMatch["@_name"] ?? targetSectionName);
+
+  const updatedXml = moveFieldOnForm(xml, fieldName, resolvedTab, resolvedSection);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Field '${fieldName}' moved to '${targetTabName}/${targetSectionName}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Field '${fieldName}' moved to '${resolvedTab}/${resolvedSection}'${cloneNote} [${status}]` };
 }
 
 // ----------------------------------------------------------------
@@ -329,10 +381,15 @@ export async function renameTabTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = renameTab(xml, tabName, newLabel);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, tabName);
+  if (!tabMatch) return tabNotFound(tabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? tabName);
+
+  const updatedXml = renameTab(xml, resolvedTab, newLabel);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Tab '${tabName}' renamed to '${newLabel}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Tab '${resolvedTab}' renamed to '${newLabel}'${cloneNote} [${status}]` };
 }
 
 export async function removeTabFromFormTool(
@@ -344,10 +401,15 @@ export async function removeTabFromFormTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = removeTabFromForm(xml, tabName);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, tabName);
+  if (!tabMatch) return tabNotFound(tabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? tabName);
+
+  const updatedXml = removeTabFromForm(xml, resolvedTab);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Tab '${tabName}' removed from form${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Tab '${resolvedTab}' removed from form${cloneNote} [${status}]` };
 }
 
 export async function listSectionsOnFormTool(
@@ -371,10 +433,19 @@ export async function renameSectionTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = renameSection(xml, tabName, sectionName, newLabel);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, tabName);
+  if (!tabMatch) return tabNotFound(tabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? tabName);
+
+  const { match: secMatch, candidates: secCandidates } = findSectionCandidates(tabMatch, sectionName);
+  if (!secMatch) return sectionNotFound(sectionName, resolvedTab, secCandidates);
+  const resolvedSection = String(secMatch["@_name"] ?? sectionName);
+
+  const updatedXml = renameSection(xml, resolvedTab, resolvedSection, newLabel);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' renamed to '${newLabel}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${resolvedSection}' renamed to '${newLabel}'${cloneNote} [${status}]` };
 }
 
 export async function removeSectionFromFormTool(
@@ -387,10 +458,19 @@ export async function removeSectionFromFormTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = removeSectionFromForm(xml, tabName, sectionName);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, tabName);
+  if (!tabMatch) return tabNotFound(tabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? tabName);
+
+  const { match: secMatch, candidates: secCandidates } = findSectionCandidates(tabMatch, sectionName);
+  if (!secMatch) return sectionNotFound(sectionName, resolvedTab, secCandidates);
+  const resolvedSection = String(secMatch["@_name"] ?? sectionName);
+
+  const updatedXml = removeSectionFromForm(xml, resolvedTab, resolvedSection);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' removed from tab '${tabName}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${resolvedSection}' removed from tab '${resolvedTab}'${cloneNote} [${status}]` };
 }
 
 export async function moveSectionOnFormTool(
@@ -403,10 +483,15 @@ export async function moveSectionOnFormTool(
 ) {
   const { cloneId, cloneName, wasCreated } = await ensureClone(client, formId);
   const xml = await getXml(client, cache, cloneId);
-  const updatedXml = moveSectionOnForm(xml, sectionName, targetTabName);
+
+  const { match: tabMatch, candidates: tabCandidates } = findTabCandidates(xml, targetTabName);
+  if (!tabMatch) return tabNotFound(targetTabName, tabCandidates);
+  const resolvedTab = String(tabMatch["@_name"] ?? targetTabName);
+
+  const updatedXml = moveSectionOnForm(xml, sectionName, resolvedTab);
   const status = await stageOrCommit(client, cache, cloneId, cloneName, updatedXml, autoCommit);
   const cloneNote = wasCreated ? ` (created clone '${cloneName}')` : ` (on clone '${cloneName}')`;
-  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' moved to tab '${targetTabName}'${cloneNote} [${status}]` };
+  return { success: true, formId: cloneId, staged: !autoCommit, message: `Section '${sectionName}' moved to tab '${resolvedTab}'${cloneNote} [${status}]` };
 }
 
 export async function publishCustomisations(client: DataverseClient) {

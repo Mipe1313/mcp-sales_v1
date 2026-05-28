@@ -144,6 +144,72 @@ export async function createChoiceColumnTool(
 }
 
 // ----------------------------------------------------------------
+// create_lookup_column
+// ----------------------------------------------------------------
+
+export async function createLookupColumnTool(
+  client: DataverseClient,
+  entityLogicalName: string,
+  fieldLogicalName: string,
+  displayName: string,
+  referencedEntity: string,
+  displayFieldLogicalName: string,
+  options: {
+    requiredLevel?: string;
+    description?: string;
+    relationshipSchemaName?: string;
+  },
+): Promise<unknown> {
+  await ensureSolution(client);
+  const solutionUniqueName = client.solutionUniqueName;
+
+  // Validate the display field exists on the referenced entity
+  const fieldMeta = await client.getAttributeFullMetadata(referencedEntity, displayFieldLogicalName);
+  if (!fieldMeta) {
+    throw new Error(
+      `Field '${displayFieldLogicalName}' does not exist on entity '${referencedEntity}'. ` +
+      `Please provide the logical name of an existing field on '${referencedEntity}'.`,
+    );
+  }
+
+  const validLevels = ["None", "Recommended", "Required"] as const;
+  type ValidLevel = (typeof validLevels)[number];
+  const reqLevel = (options.requiredLevel as ValidLevel) ?? "None";
+  if (!validLevels.includes(reqLevel)) {
+    throw new Error(`Invalid requiredLevel '${reqLevel}'. Must be: None, Recommended, or Required`);
+  }
+
+  const { metadataId, relationshipSchemaName } = await client.createLookupAttribute(
+    entityLogicalName,
+    fieldLogicalName,
+    displayName,
+    referencedEntity,
+    {
+      requiredLevel: reqLevel,
+      description: options.description,
+      relationshipSchemaName: options.relationshipSchemaName,
+    },
+    solutionUniqueName,
+  );
+
+  return {
+    success: true,
+    metadataId,
+    logicalName: fieldLogicalName,
+    entityLogicalName,
+    referencedEntity,
+    displayFieldLogicalName,
+    displayFieldType: fieldMeta.AttributeType,
+    relationshipSchemaName,
+    message:
+      `Lookup field '${fieldLogicalName}' created on '${entityLogicalName}' referencing '${referencedEntity}'. ` +
+      `Display field: '${displayFieldLogicalName}' (${fieldMeta.AttributeType}). ` +
+      `Note: the standard Dataverse lookup control shows the primary name field of '${referencedEntity}'. ` +
+      `Relationship schema name: '${relationshipSchemaName}'. MetadataId: ${metadataId}`,
+  };
+}
+
+// ----------------------------------------------------------------
 // set_field_requirement
 // ----------------------------------------------------------------
 

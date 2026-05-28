@@ -651,3 +651,100 @@ export function moveSectionOnForm(
 
   return buildFormXml(form);
 }
+
+// ---------------------------------------------------------------
+// Fuzzy lookup helpers (case-insensitive name or label matching)
+// ---------------------------------------------------------------
+
+export interface TabCandidate { name: string; label: string; id: string }
+export interface SectionCandidate { name: string; label: string; id: string }
+
+/**
+ * Find a tab by name. Resolution order:
+ *   1. Exact @_name match
+ *   2. Case-insensitive @_name match
+ *   3. Case-insensitive label match
+ * Returns the matched tab record and all available candidates (for clarification).
+ */
+export function findTabCandidates(
+  formXml: string,
+  tabName: string,
+): { match: Record<string, unknown> | null; candidates: TabCandidate[] } {
+  const form = parseFormXml(formXml);
+  const root = form["form"] as Record<string, unknown>;
+  const tabs = toArray((root?.["tabs"] as Record<string, unknown>)?.["tab"]) as Record<
+    string,
+    unknown
+  >[];
+
+  const candidates: TabCandidate[] = tabs.map((tab) => {
+    const name = String(tab["@_name"] ?? "");
+    const id = String(tab["@_id"] ?? "");
+    const lbls = toArray(
+      (tab["labels"] as Record<string, unknown>)?.["label"],
+    ) as Record<string, unknown>[];
+    const label = String(lbls[0]?.["@_description"] ?? name);
+    return { name, label, id };
+  });
+
+  const lower = tabName.toLowerCase();
+  const match =
+    tabs.find((t) => t["@_name"] === tabName) ??
+    tabs.find((t) => String(t["@_name"] ?? "").toLowerCase() === lower) ??
+    tabs.find((t) => {
+      const lbls = toArray(
+        (t["labels"] as Record<string, unknown>)?.["label"],
+      ) as Record<string, unknown>[];
+      return lbls.some((l) => String(l["@_description"] ?? "").toLowerCase() === lower);
+    }) ??
+    null;
+
+  return { match, candidates };
+}
+
+/**
+ * Find a section by name within a resolved tab record. Resolution order:
+ *   1. Exact @_name match
+ *   2. Case-insensitive @_name match
+ *   3. Case-insensitive label match
+ * Returns the matched section record and all available candidates in that tab.
+ */
+export function findSectionCandidates(
+  tab: Record<string, unknown>,
+  sectionName: string,
+): { match: Record<string, unknown> | null; candidates: SectionCandidate[] } {
+  const allSections: Record<string, unknown>[] = [];
+  for (const col of toArray(
+    (tab["columns"] as Record<string, unknown>)?.["column"],
+  ) as Record<string, unknown>[]) {
+    allSections.push(
+      ...(toArray(
+        (col["sections"] as Record<string, unknown>)?.["section"],
+      ) as Record<string, unknown>[]),
+    );
+  }
+
+  const candidates: SectionCandidate[] = allSections.map((sec) => {
+    const name = String(sec["@_name"] ?? "");
+    const id = String(sec["@_id"] ?? "");
+    const lbls = toArray(
+      (sec["labels"] as Record<string, unknown>)?.["label"],
+    ) as Record<string, unknown>[];
+    const label = String(lbls[0]?.["@_description"] ?? name);
+    return { name, label, id };
+  });
+
+  const lower = sectionName.toLowerCase();
+  const match =
+    allSections.find((s) => s["@_name"] === sectionName) ??
+    allSections.find((s) => String(s["@_name"] ?? "").toLowerCase() === lower) ??
+    allSections.find((s) => {
+      const lbls = toArray(
+        (s["labels"] as Record<string, unknown>)?.["label"],
+      ) as Record<string, unknown>[];
+      return lbls.some((l) => String(l["@_description"] ?? "").toLowerCase() === lower);
+    }) ??
+    null;
+
+  return { match, candidates };
+}
